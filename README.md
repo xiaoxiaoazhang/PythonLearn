@@ -1,2 +1,2 @@
 # PythonLearn
-learn python demo
+- 学习python的一些demo
