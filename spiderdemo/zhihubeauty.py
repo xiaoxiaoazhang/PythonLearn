@@ -6,8 +6,16 @@ import os
 import re
 
 import requests
+import base64
 from lxml import etree
 
+from aip import AipFace
+
+# 百度云 人脸检测 申请信息
+# 唯一必须填的信息就这三行
+APP_ID = "11523614"
+API_KEY = "5ZlfEA3FXeorXqegIX6fsSwN"
+SECRET_KEY = "lblBMiavAKKuBX14m9sEnEzj1T63ztKK"
 
 # 文件存放目录名，相对于当前目录
 DIR = "image"
@@ -97,13 +105,21 @@ def process_activities(datums, face_detective):
             if not image.startswith("http"):
                 continue
             s = fetch_image(image)
-            filename = author_name + "--" + question_title + ("--%d" % seq) + ".jpg"
-            filename = re.sub(r'(?u)[^-\w.]', '_', filename)
-            # 注意文件名的处理，不同平台的非法字符不一样，这里只做了简单处理，特别是 author_name / question_title 中的内容
-            seq = seq + 1
-            with open(os.path.join(DIR, filename), "wb") as fd:
-                fd.write(s)
-
+            image_bytes = base64.b64encode(s)
+            image_str = image_bytes.decode('utf-8')
+            print("s: " + image_str)
+            # 请求人脸检测服务
+            scores = face_detective(image_str)
+            print(scores)
+            for score in scores:
+                filename = ("%d--" % score) + author_name + "--" + question_title + ("--%d" % seq) + ".jpg"
+                # filename = author_name + "--" + question_title + ("--%d" % seq) + ".jpg"
+                filename = re.sub(r'(?u)[^-\w.]', '_', filename)
+                # 注意文件名的处理，不同平台的非法字符不一样，这里只做了简单处理，特别是 author_name / question_title 中的内容
+                seq = seq + 1
+                with open(os.path.join(DIR, filename), "wb") as fd:
+                    fd.write(s)
+            # 人脸检测 免费，但有 QPS 限制
             time.sleep(2)
 
     if not datums["paging"]["is_end"]:
@@ -118,19 +134,58 @@ def get_valid_filename(s):
     return re.sub(r'(?u)[^-\w.]', '_', s)
 
 
+def init_face_detective(app_id, api_key, secret_key):
+    client = AipFace(app_id, api_key, secret_key)
+    # 人脸检测中，在响应中附带额外的字段。年龄 / 性别 / 颜值 / 质量
+    options = {
+        'max_face_num': 1,
+        'face_field': 'age,beauty,expression,face_shape,gender,glasses,landmark,race,quality,face_type'
+    }
+
+    def detective(image):
+        response = client.detect(image, "BASE64", options)
+        print(response)
+        # 如果没有检测到人脸
+        result = response["result"]
+        if response["error_code"] != 0 or result["face_num"] == 0:
+            return []
+
+        scores = []
+        for face in result["face_list"]:
+            # 人脸置信度太低
+            if face["face_probability"] < 0.6:
+                continue
+            # 人脸质量信息
+            if face["quality"]["completeness"] != 1:
+                continue
+            # 颜值低于阈值
+            if face["beauty"] < BEAUTY_THRESHOLD:
+                continue
+            # 性别非女性
+            if face["gender"]["type"] != "female":
+                continue
+            scores.append(face["beauty"])
+
+        return scores
+
+    return detective
+
+
 def init_env():
     if not os.path.exists(DIR):
         os.makedirs(DIR)
 
 
-if __name__ == '__main__':
+if __name__=='__main__':
     init_env()
+    face_detective = init_face_detective(APP_ID, API_KEY, SECRET_KEY)
+
     url = BASE_URL % SOURCE + URL_QUERY
     while url is not None:
         print("current url: " + url)
         datums = fetch_activities(url)
         print("datums: " + str(datums))
-        url = process_activities(datums)
+        url = process_activities(datums, face_detective)
         # 注意节操，爬虫休息间隔不要调小
         time.sleep(5)
 
